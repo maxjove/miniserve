@@ -5,19 +5,39 @@ use actix_web::{
     HttpRequest, HttpResponse, ResponseError,
 };
 use futures::prelude::*;
+use std::str::FromStr;
 use thiserror::Error;
 
 use crate::{renderer::render_error, MiniserveConfig};
 
 #[derive(Debug, Error)]
-pub enum ContextualError {
+pub enum StartupError {
+    /// Any kind of IO errors
+    #[error("{0}\ncaused by: {1}")]
+    IoError(String, std::io::Error),
+
+    /// In case miniserve was invoked without an interactive terminal and without an explicit path
+    #[error("Refusing to start as no explicit serve path was set and no interactive terminal was attached
+Please set an explicit serve path like: `miniserve /my/path`")]
+    NoExplicitPathAndNoTerminal,
+
+    /// In case miniserve was invoked with --no-symlinks but the serve path is a symlink
+    #[error("The -P|--no-symlinks option was provided but the serve path '{0}' is a symlink")]
+    NoSymlinksOptionWithSymlinkServePath(String),
+
+    #[error("The --enable-webdav option was provided, but the serve path '{0}' is a file")]
+    WebdavWithFileServePath(String),
+}
+
+#[derive(Debug, Error)]
+pub enum RuntimeError {
     /// Any kind of IO errors
     #[error("{0}\ncaused by: {1}")]
     IoError(String, std::io::Error),
 
     /// Might occur during file upload, when processing the multipart request fails
     #[error("Failed to process multipart request\ncaused by: {0}")]
-    MultipartError(actix_multipart::MultipartError),
+    MultipartError(String),
 
     /// Might occur during file upload
     #[error("File already exists, and the overwrite_files option has not been set")]
@@ -31,22 +51,6 @@ pub enum ContextualError {
     #[error("Invalid path\ncaused by: {0}")]
     InvalidPathError(String),
 
-    /// Might occur if the HTTP credential string does not respect the expected format
-    #[error("Invalid format for credentials string. Expected username:password, username:sha256:hash or username:sha512:hash")]
-    InvalidAuthFormat,
-
-    /// Might occur if the hash method is neither sha256 nor sha512
-    #[error("{0} is not a valid hashing method. Expected sha256 or sha512")]
-    InvalidHashMethod(String),
-
-    /// Might occur if the HTTP auth hash password is not a valid hex code
-    #[error("Invalid format for password hash. Expected hex code")]
-    InvalidPasswordHash,
-
-    /// Might occur if the HTTP auth password exceeds 255 characters
-    #[error("HTTP password length exceeds 255 characters")]
-    PasswordTooLongError,
-
     /// Might occur if the user has insufficient permissions to create an entry in a given directory
     #[error("Insufficient permissions to create file in {0}")]
     InsufficientPermissionsError(String),
@@ -57,7 +61,7 @@ pub enum ContextualError {
 
     /// Might occur when the creation of an archive fails
     #[error("An error occurred while creating the {0}\ncaused by: {1}")]
-    ArchiveCreationError(String, Box<ContextualError>),
+    ArchiveCreationError(String, Box<RuntimeError>),
 
     /// More specific archive creation failure reason
     #[error("{0}")]
@@ -74,28 +78,25 @@ pub enum ContextualError {
     /// Might occur when trying to access a page that does not exist
     #[error("Route {0} could not be found")]
     RouteNotFoundError(String),
-
-    /// In case miniserve was invoked without an interactive terminal and without an explicit path
-    #[error("Refusing to start as no explicit serve path was set and no interactive terminal was attached
-Please set an explicit serve path like: `miniserve /my/path`")]
-    NoExplicitPathAndNoTerminal,
-
-    /// In case miniserve was invoked with --no-symlinks but the serve path is a symlink
-    #[error("The -P|--no-symlinks option was provided but the serve path '{0}' is a symlink")]
-    NoSymlinksOptionWithSymlinkServePath(String),
 }
 
-impl ResponseError for ContextualError {
+impl ResponseError for RuntimeError {
     fn status_code(&self) -> StatusCode {
+        use RuntimeError as E;
+        use StatusCode as S;
         match self {
-            Self::ArchiveCreationError(_, err) => err.status_code(),
-            Self::RouteNotFoundError(_) => StatusCode::NOT_FOUND,
-            Self::InsufficientPermissionsError(_) => StatusCode::FORBIDDEN,
-            Self::InvalidHttpCredentials => StatusCode::UNAUTHORIZED,
-            Self::InvalidHttpRequestError(_) => StatusCode::BAD_REQUEST,
-            Self::DuplicateFileError => StatusCode::FORBIDDEN,
-            Self::UploadForbiddenError => StatusCode::FORBIDDEN,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+            E::IoError(_, _) => S::INTERNAL_SERVER_ERROR,
+            E::MultipartError(_) => S::BAD_REQUEST,
+            E::DuplicateFileError => S::CONFLICT,
+            E::UploadForbiddenError => S::FORBIDDEN,
+            E::InvalidPathError(_) => S::BAD_REQUEST,
+            E::InsufficientPermissionsError(_) => S::FORBIDDEN,
+            E::ParseError(_, _) => S::BAD_REQUEST,
+            E::ArchiveCreationError(_, err) => err.status_code(),
+            E::ArchiveCreationDetailError(_) => S::INTERNAL_SERVER_ERROR,
+            E::InvalidHttpCredentials => S::UNAUTHORIZED,
+            E::InvalidHttpRequestError(_) => S::BAD_REQUEST,
+            E::RouteNotFoundError(_) => S::NOT_FOUND,
         }
     }
 
@@ -131,8 +132,15 @@ where
         let res = fut.await?.map_into_boxed_body();
 
         if (res.status().is_client_error() || res.status().is_server_error())
-            && res.headers().get(header::CONTENT_TYPE).map(AsRef::as_ref)
-                == Some(mime::TEXT_PLAIN_UTF_8.essence_str().as_bytes())
+            && res
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .map(AsRef::as_ref)
+                .and_then(|s| std::str::from_utf8(s).ok())
+                .and_then(|s| mime::Mime::from_str(s).ok())
+                .as_ref()
+                .map(mime::Mime::essence_str)
+                == Some(mime::TEXT_PLAIN.as_ref())
         {
             let req = res.request().clone();
             Ok(res.map_body(|head, body| map_error_page(&req, head, body)))

@@ -1,23 +1,26 @@
-mod fixtures;
-mod utils;
+use std::process::{Command, Stdio};
 
-use fixtures::{server, Error, TestServer, DEEPLY_NESTED_FILE, DIRECTORIES};
 use pretty_assertions::{assert_eq, assert_ne};
 use rstest::rstest;
 use select::document::Document;
-use std::process::{Command, Stdio};
-use utils::get_link_from_text;
 
-#[rstest(
-    input,
-    expected,
-    case("", "/"),
-    case("/dira", "/dira/"),
-    case("/dirb/", "/dirb/"),
-    case("/very/deeply/nested", "/very/deeply/nested/")
-)]
+mod fixtures;
+mod utils;
+
+use crate::fixtures::{server, Error, TestServer, DEEPLY_NESTED_FILE, DIRECTORIES};
+use crate::utils::{get_link_from_text, get_link_hrefs_with_prefix};
+
+#[rstest]
+#[case("", "/")]
+#[case("/dira", "/dira/")]
+#[case("/dirb/", "/dirb/")]
+#[case("/very/deeply/nested", "/very/deeply/nested/")]
 /// Directories get a trailing slash.
-fn index_gets_trailing_slash(server: TestServer, input: &str, expected: &str) -> Result<(), Error> {
+fn index_gets_trailing_slash(
+    server: TestServer,
+    #[case] input: &str,
+    #[case] expected: &str,
+) -> Result<(), Error> {
     let resp = reqwest::blocking::get(server.url().join(input)?)?;
     assert!(resp.url().as_str().ends_with(expected));
 
@@ -51,11 +54,11 @@ fn can_navigate_into_dirs_and_back(server: TestServer) -> Result<(), Error> {
     let initial_parsed = Document::from_read(initial_body)?;
     for &directory in DIRECTORIES {
         let dir_elem = get_link_from_text(&initial_parsed, directory).expect("Dir not found.");
-        let body = reqwest::blocking::get(&format!("{base_url}{dir_elem}"))?.error_for_status()?;
+        let body = reqwest::blocking::get(format!("{base_url}{dir_elem}"))?.error_for_status()?;
         let parsed = Document::from_read(body)?;
         let back_link =
             get_link_from_text(&parsed, "Parent directory").expect("Back link not found.");
-        let resp = reqwest::blocking::get(&format!("{base_url}{back_link}"))?;
+        let resp = reqwest::blocking::get(format!("{base_url}{back_link}"))?;
 
         // Now check that we can actually get back to the original location we came from using the
         // link.
@@ -144,6 +147,44 @@ fn can_navigate_using_breadcrumbs(
     // current dir is not linked
     let current_dir_link = get_link_from_text(&parsed, "nested");
     assert_eq!(None, current_dir_link);
+
+    Ok(())
+}
+
+#[rstest]
+#[case(server(&["--default-sorting-method", "name", "--default-sorting-order", "asc"]), "name", "asc")]
+#[case(server(&["--default-sorting-method", "name", "--default-sorting-order", "desc"]), "name", "desc")]
+/// We can specify the default sorting order
+fn can_specify_default_sorting_order(
+    #[case] server: TestServer,
+    #[case] method: String,
+    #[case] order: String,
+) -> Result<(), Error> {
+    let resp = reqwest::blocking::get(server.url())?;
+    let body = resp.error_for_status()?;
+    let parsed = Document::from_read(body)?;
+
+    let links = get_link_hrefs_with_prefix(&parsed, "/");
+    let dir_iter = server.path();
+    let mut dir_entries = dir_iter
+        .read_dir()
+        .unwrap()
+        .map(|x| x.unwrap().file_name().into_string().unwrap())
+        .map(|x| format!("/{x}"))
+        .collect::<Vec<_>>();
+    dir_entries.sort();
+
+    if method == "name" && order == "asc" {
+        assert_eq!(
+            *dir_entries.last().unwrap(),
+            *percent_encoding::percent_decode_str(links.first().unwrap()).decode_utf8_lossy()
+        );
+    } else if method == "name" && order == "desc" {
+        assert_eq!(
+            *dir_entries.first().unwrap(),
+            *percent_encoding::percent_decode_str(links.first().unwrap()).decode_utf8_lossy()
+        );
+    }
 
     Ok(())
 }
