@@ -48,6 +48,10 @@ Sometimes this is just a more practical and quick way than doing things properly
     pw=$(echo -n "123" | sha256sum | cut -f 1 -d ' ')
     miniserve --auth joe:sha256:$pw unreleased-linux-distros/
 
+### Require username/password from file (separate logins with new lines):
+
+    miniserve --auth-file auth.txt unreleased-linux-distros/
+
 ### Generate random 6-hexdigit URL:
 
     miniserve -i 192.168.0.1 --random-route /tmp
@@ -57,9 +61,22 @@ Sometimes this is just a more practical and quick way than doing things properly
 
     miniserve -i 192.168.0.1 -i 10.13.37.10 -i ::1 /tmp/myshare
 
+### Insert custom headers
+
+    miniserve --header "Cache-Control:no-cache" --header "X-Custom-Header:custom-value" -p 8080 /tmp/myshare
+    # Check headers in another terminal
+    curl -I http://localhost:8080
+
+If a header is already set or previously inserted, it will not be overwritten.
+
 ### Start with TLS:
 
     miniserve --tls-cert my.cert --tls-key my.key /tmp/myshare
+    # Fullchain TLS and HTTP Strict Transport Security (HSTS)
+    miniserve --tls-cert fullchain.pem --tls-key my.key --header "Strict-Transport-Security: max-age=31536000; includeSubDomains; preload" /tmp/myshare
+
+If the parameter value has spaces, be sure to wrap it in quotes.
+(To achieve an A+ rating at https://www.ssllabs.com/ssltest/, enabling both fullchain TLS and HSTS is necessary.)
 
 ### Upload a file using `curl`:
 
@@ -109,147 +126,287 @@ Some mobile browsers like Firefox on Android will offer to open the camera app w
 - Sane and secure defaults
 - TLS (for supported architectures)
 - Supports README.md rendering like on GitHub
+- Range requests
+- WebDAV support
 
 ## Usage
 
-    For when you really just want to serve some files over HTTP right now!
+```
+For when you really just want to serve some files over HTTP right now!
 
-    Usage: miniserve [OPTIONS] [PATH]
+Usage: miniserve [OPTIONS] [PATH]
 
-    Arguments:
-      [PATH]
-              Which path to serve
+Arguments:
+  [PATH]
+          Which path to serve
 
-    Options:
-      -v, --verbose
-              Be verbose, includes emitting access logs
+          [env: MINISERVE_PATH=]
 
-          --index <INDEX>
-              The name of a directory index file to serve, like "index.html"
+Options:
+  -v, --verbose
+          Be verbose, includes emitting access logs
 
-              Normally, when miniserve serves a directory, it creates a listing for that
-              directory. However, if a directory contains this file, miniserve will serve that
-              file instead.
+          [env: MINISERVE_VERBOSE=]
 
-          --spa
-              Activate SPA (Single Page Application) mode
+      --index <INDEX>
+          The name of a directory index file to serve, like "index.html"
 
-              This will cause the file given by --index to be served for all non-existing file
-              paths. In effect, this will serve the index file whenever a 404 would otherwise
-              occur in order to allow the SPA router to handle the request instead.
+          Normally, when miniserve serves a directory, it creates a listing for that directory. However, if a
+          directory contains this file, miniserve will serve that file instead.
 
-      -p, --port <PORT>
-              Port to use
+          [env: MINISERVE_INDEX=]
 
-              [default: 8080]
+      --spa
+          Activate SPA (Single Page Application) mode
 
-      -i, --interfaces <INTERFACES>...
-              Interface to listen on
+          This will cause the file given by --index to be served for all non-existing file paths. In effect,
+          this will serve the index file whenever a 404 would otherwise occur in order to allow the SPA
+          router to handle the request instead.
 
-      -a, --auth <AUTH>...
-              Set authentication. Currently supported formats: username:password,
-              username:sha256:hash, username:sha512:hash (e.g. joe:123,
-              joe:sha256:a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3)
+          [env: MINISERVE_SPA=]
 
-          --route-prefix <ROUTE_PREFIX>
-              Use a specific route prefix
+      --pretty-urls
+          Activate Pretty URLs mode
 
-          --random-route
-              Generate a random 6-hexdigit route
+          This will cause the server to serve the equivalent `.html` file indicated by the path.
 
-      -P, --no-symlinks
-              Hide symlinks in listing and prevent them from being followed
+          `/about` will try to find `about.html` and serve it.
 
-      -H, --hidden
-              Show hidden files
+          [env: MINISERVE_PRETTY_URLS=]
 
-      -c, --color-scheme <COLOR_SCHEME>
-              Default color scheme
+  -p, --port <PORT>
+          Port to use
 
-              [default: squirrel]
-              [possible values: squirrel, archlinux, zenburn, monokai]
+          [env: MINISERVE_PORT=]
+          [default: 8080]
 
-      -d, --color-scheme-dark <COLOR_SCHEME_DARK>
-              Default color scheme
+  -i, --interfaces <INTERFACES>
+          Interface to listen on
 
-              [default: archlinux]
-              [possible values: squirrel, archlinux, zenburn, monokai]
+          [env: MINISERVE_INTERFACE=]
 
-      -q, --qrcode
-              Enable QR code display
+  -a, --auth <AUTH>
+          Set authentication
 
-      -u, --upload-files [<ALLOWED_UPLOAD_DIR>]
-              Enable file uploading (and optionally specify for which directory)
+          Currently supported formats:
+          username:password, username:sha256:hash, username:sha512:hash
+          (e.g. joe:123, joe:sha256:a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3)
 
-      -U, --mkdir
-              Enable creating directories
+          [env: MINISERVE_AUTH=]
 
-      -m, --media-type <MEDIA_TYPE>
-              Specify uploadable media types
+      --auth-file <AUTH_FILE>
+          Read authentication values from a file
 
-              [possible values: image, audio, video]
+          Example file content:
 
-      -M, --raw-media-type <MEDIA_TYPE_RAW>
-              Directly specify the uploadable media type expression
+          joe:123
+          bob:sha256:a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3
+          bill:
 
-      -o, --overwrite-files
-              Enable overriding existing files during file upload
+          [env: MINISERVE_AUTH_FILE=]
 
-      -r, --enable-tar
-              Enable uncompressed tar archive generation
+      --route-prefix <ROUTE_PREFIX>
+          Use a specific route prefix
 
-      -g, --enable-tar-gz
-              Enable gz-compressed tar archive generation
+          [env: MINISERVE_ROUTE_PREFIX=]
 
-      -z, --enable-zip
-              Enable zip archive generation
+      --random-route
+          Generate a random 6-hexdigit route
 
-              WARNING: Zipping large directories can result in out-of-memory exception because zip
-              generation is done in memory and cannot be sent on the fly
+          [env: MINISERVE_RANDOM_ROUTE=]
 
-      -D, --dirs-first
-              List directories first
+  -P, --no-symlinks
+          Hide symlinks in listing and prevent them from being followed
 
-      -t, --title <TITLE>
-              Shown instead of host in page title and heading
+          [env: MINISERVE_NO_SYMLINKS=]
 
-          --header <HEADER>...
-              Set custom header for responses
+  -H, --hidden
+          Show hidden files
 
-      -l, --show-symlink-info
-              Visualize symlinks in directory listing
+          [env: MINISERVE_HIDDEN=]
 
-      -F, --hide-version-footer
-              Hide version footer
+  -S, --default-sorting-method <DEFAULT_SORTING_METHOD>
+          Default sorting method for file list
 
-          --hide-theme-selector
-              Hide theme selector
+          [env: MINISERVE_DEFAULT_SORTING_METHOD=]
+          [default: name]
 
-      -W, --show-wget-footer
-              If enabled, display a wget command to recursively download the current directory
+          Possible values:
+          - name: Sort by name
+          - size: Sort by size
+          - date: Sort by last modification date (natural sort: follows alphanumerical order)
 
-          --print-completions <shell>
-              Generate completion file for a shell
+  -O, --default-sorting-order <DEFAULT_SORTING_ORDER>
+          Default sorting order for file list
 
-              [possible values: bash, elvish, fish, powershell, zsh]
+          [env: MINISERVE_DEFAULT_SORTING_ORDER=]
+          [default: desc]
 
-          --print-manpage
-              Generate man page
+          Possible values:
+          - asc:  Ascending order
+          - desc: Descending order
 
-          --tls-cert <TLS_CERT>
-              TLS certificate to use
+  -c, --color-scheme <COLOR_SCHEME>
+          Default color scheme
 
-          --tls-key <TLS_KEY>
-              TLS private key to use
+          [env: MINISERVE_COLOR_SCHEME=]
+          [default: squirrel]
+          [possible values: squirrel, archlinux, zenburn, monokai]
 
-          --readme
-              Enable README.md rendering in directories
+  -d, --color-scheme-dark <COLOR_SCHEME_DARK>
+          Default color scheme
 
-      -h, --help
-              Print help information (use `-h` for a summary)
+          [env: MINISERVE_COLOR_SCHEME_DARK=]
+          [default: archlinux]
+          [possible values: squirrel, archlinux, zenburn, monokai]
 
-      -V, --version
-              Print version information
+  -q, --qrcode
+          Enable QR code display
+
+          [env: MINISERVE_QRCODE=]
+
+  -u, --upload-files [<ALLOWED_UPLOAD_DIR>]
+          Enable file uploading (and optionally specify for which directory)
+
+          The provided path is not a physical file system path. Instead, it's relative to the serve dir. For
+          instance, if the serve dir is '/home/hello', set this to '/upload' to allow uploading to
+          '/home/hello/upload'. When specified via environment variable, a path always needs to be specified.
+
+          [env: MINISERVE_ALLOWED_UPLOAD_DIR=]
+
+  -U, --mkdir
+          Enable creating directories
+
+          [env: MINISERVE_MKDIR_ENABLED=]
+
+  -m, --media-type <MEDIA_TYPE>
+          Specify uploadable media types
+
+          [env: MINISERVE_MEDIA_TYPE=]
+          [possible values: image, audio, video]
+
+  -M, --raw-media-type <MEDIA_TYPE_RAW>
+          Directly specify the uploadable media type expression
+
+          [env: MINISERVE_RAW_MEDIA_TYPE=]
+
+  -o, --overwrite-files
+          Enable overriding existing files during file upload
+
+          [env: MINISERVE_OVERWRITE_FILES=]
+
+  -r, --enable-tar
+          Enable uncompressed tar archive generation
+
+          [env: MINISERVE_ENABLE_TAR=]
+
+  -g, --enable-tar-gz
+          Enable gz-compressed tar archive generation
+
+          [env: MINISERVE_ENABLE_TAR_GZ=]
+
+  -z, --enable-zip
+          Enable zip archive generation
+
+          WARNING: Zipping large directories can result in out-of-memory exception because zip generation is
+          done in memory and cannot be sent on the fly
+
+          [env: MINISERVE_ENABLE_ZIP=]
+
+  -C, --compress-response
+          Compress response
+
+          WARNING: Enabling this option may slow down transfers due to CPU overhead, so it is disabled by
+          default.
+
+          Only enable this option if you know that your users have slow connections or if you want to
+          minimize your server's bandwidth usage.
+
+          [env: MINISERVE_COMPRESS_RESPONSE=]
+
+  -D, --dirs-first
+          List directories first
+
+          [env: MINISERVE_DIRS_FIRST=]
+
+  -t, --title <TITLE>
+          Shown instead of host in page title and heading
+
+          [env: MINISERVE_TITLE=]
+
+      --header <HEADER>
+          Inserts custom headers into the responses. Specify each header as a 'Header:Value' pair. This
+          parameter can be used multiple times to add multiple headers.
+
+          Example: --header "Header1:Value1" --header "Header2:Value2" (If a header is already set or
+          previously inserted, it will not be overwritten.)
+
+          [env: MINISERVE_HEADER=]
+
+  -l, --show-symlink-info
+          Visualize symlinks in directory listing
+
+          [env: MINISERVE_SHOW_SYMLINK_INFO=]
+
+  -F, --hide-version-footer
+          Hide version footer
+
+          [env: MINISERVE_HIDE_VERSION_FOOTER=]
+
+      --hide-theme-selector
+          Hide theme selector
+
+          [env: MINISERVE_HIDE_THEME_SELECTOR=]
+
+  -W, --show-wget-footer
+          If enabled, display a wget command to recursively download the current directory
+
+          [env: MINISERVE_SHOW_WGET_FOOTER=]
+
+      --print-completions <shell>
+          Generate completion file for a shell
+
+          [possible values: bash, elvish, fish, powershell, zsh]
+
+      --print-manpage
+          Generate man page
+
+      --tls-cert <TLS_CERT>
+          TLS certificate to use
+
+          [env: MINISERVE_TLS_CERT=]
+
+      --tls-key <TLS_KEY>
+          TLS private key to use
+
+          [env: MINISERVE_TLS_KEY=]
+
+      --readme
+          Enable README.md rendering in directories
+
+          [env: MINISERVE_README=]
+
+  -I, --disable-indexing
+          Disable indexing
+
+          This will prevent directory listings from being generated and return an error instead.
+
+          [env: MINISERVE_DISABLE_INDEXING=]
+
+      --enable-webdav
+          Enable read-only WebDAV support (PROPFIND requests)
+
+          Currently incompatible with -P|--no-symlinks (see
+          https://github.com/messense/dav-server-rs/issues/37)
+
+          [env: MINISERVE_ENABLE_WEBDAV=]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+```
 
 ## How to install
 
@@ -299,6 +456,8 @@ Alternatively install with [Scoop](https://scoop.sh/):
 
     podman run -v /tmp:/tmp -p 8080:8080 --rm -it docker.io/svenstaro/miniserve /tmp
 
+**With Helm:** See [this third-party Helm chart](https://codeberg.org/wrenix/helm-charts/src/branch/main/miniserve) by @wrenix.
+
 ## Shell completions
 
 If you'd like to make use of the built-in shell completion support, you need to run `miniserve
@@ -329,10 +488,19 @@ In case you want to customize the particular flags that miniserve launches with,
 and set the `[Service]` part in the resulting `override.conf` file. For instance:
 
     [Service]
+    ExecStart=
     ExecStart=/usr/bin/miniserve --enable-tar --enable-zip --no-symlinks --verbose -i ::1 -p 1234 --title hello --color-scheme monokai --color-scheme-dark monokai -- %I
 
-Make sure to leave the `%I` at the very end in place or the wrong path might be served. You
-might additionally have to override `IPAddressAllow` and `IPAddressDeny` if you plan on making
+Make sure to leave the `%I` at the very end in place or the wrong path might be served.
+Alternatively, you can configure the service via environment variables:
+
+    [Service]
+    Environment=MINISERVE_ENABLE_TAR=true
+    Environment=MINISERVE_ENABLE_ZIP=true
+    Environment="MINISERVE_TITLE=hello world"
+    ...
+
+You might additionally have to override `IPAddressAllow` and `IPAddressDeny` if you plan on making
 miniserve directly available on a public interface.
 
 ## Binding behavior

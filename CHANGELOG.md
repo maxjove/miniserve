@@ -8,6 +8,50 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 <!-- next-header -->
 
 ## [Unreleased] - ReleaseDate
+- Add date pill and sort links for mobile views [#1473](https://github.com/svenstaro/miniserve/pull/1473) (thanks @Flat)
+
+## [0.29.0] - 2025-02-06
+- Make URL encoding fully WHATWG-compliant [#1454](https://github.com/svenstaro/miniserve/pull/1454) (thanks @cyqsimon)
+- Fix `OVERWRITE_FILES` env var not being prefixed by `MINISERVE_` [#1457](https://github.com/svenstaro/miniserve/issues/1457)
+- Change `font-weight` of regular files to be `normal` to improve readability [#1471](https://github.com/svenstaro/miniserve/pull/1471) (thanks @shaicoleman)
+- Add webdav support [#1415](https://github.com/svenstaro/miniserve/pull/1415) (thanks @ahti)
+- Move favicon and css to stable, non-random routes [#1472](https://github.com/svenstaro/miniserve/pull/1472) (thanks @ahti)
+
+## [0.28.0] - 2024-09-12
+- Fix wrapping text in mobile view when the file name too long [#1379](https://github.com/svenstaro/miniserve/pull/1379) (thanks @chaibiq)
+- Fix missing drag-form when dragging file in to browser [#1390](https://github.com/svenstaro/miniserve/pull/1390) (thanks @chaibiq)
+- Improve documentation for the --header parameter [#1389](https://github.com/svenstaro/miniserve/pull/1389) (thanks @orwithout)
+- Don't show mkdir option when the directory is not upload allowed [#1442](https://github.com/svenstaro/miniserve/pull/1442) (thanks @Atreyagaurav)
+
+## [0.27.1] - 2024-03-16
+- Add `Add file and folder symbols` [#1365](https://github.com/svenstaro/miniserve/pull/1365) (thanks @chaibiq)
+
+## [0.27.0] - 2024-03-16
+- Add `-C/--compress-response` to enable response compression [1315](https://github.com/svenstaro/miniserve/pull/1315) (thanks @zuisong)
+- Refactor errors [#1331](https://github.com/svenstaro/miniserve/pull/1331) (thanks @cyqsimon)
+- Add `-I/--disable-inexing` [#1329](https://github.com/svenstaro/miniserve/pull/1329) (thanks @dyc3)
+
+## [0.26.0] - 2024-01-13
+- Properly handle read-only errors on Windows [#1310](https://github.com/svenstaro/miniserve/pull/1310) (thanks @ViRb3)
+- Use `tokio::fs` instead of `std::fs` to enable async file operations [#445](https://github.com/svenstaro/miniserve/issues/445)
+- Add `-S`/`--default-sorting-method` and `-O`/`--default-sorting-order` flags [#1308](https://github.com/svenstaro/miniserve/pull/1308) (thanks @ElliottLandsborough)
+
+## [0.25.0] - 2024-01-07
+- Add `--pretty-urls` [#1193](https://github.com/svenstaro/miniserve/pull/1193) (thanks @nlopes)
+- Fix single quote display with `--show-wget-footer` [#1191](https://github.com/svenstaro/miniserve/pull/1191) (thanks @d-air1)
+- Remove header Content-Encoding when archiving [#1290](https://github.com/svenstaro/miniserve/pull/1290) (thanks @5long)
+- Prevent illegal request path from crashing program [#1285](https://github.com/svenstaro/miniserve/pull/1285) (thanks @cyqsimon)
+- Fixed issue where serving files with a newline would fail [#1294](https://github.com/svenstaro/miniserve/issues/1294)
+
+## [0.24.0] - 2023-07-06
+- Fix ANSI color codes are printed when not a tty [#1095](https://github.com/svenstaro/miniserve/pull/1095)
+- Allow parameters to be provided via environment variables [#1160](https://github.com/svenstaro/miniserve/pull/1160)
+
+## [0.23.2] - 2023-04-28
+- Build Windows build with static CRT [#1107](https://github.com/svenstaro/miniserve/pull/1107)
+
+## [0.23.1] - 2023-04-17
+- Add EC key support [#1080](https://github.com/svenstaro/miniserve/issues/1080)
 
 ## [0.23.0] - 2023-03-01
 - Update to clap v4
@@ -168,7 +212,16 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 - Some theme related bug fixes (thanks @boastful-squirrel)
 
 <!-- next-url -->
-[Unreleased]: https://github.com/svenstaro/miniserve/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/svenstaro/miniserve/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/svenstaro/miniserve/compare/v0.28.0...v0.29.0
+[0.28.0]: https://github.com/svenstaro/miniserve/compare/v0.27.1...v0.28.0
+[0.27.1]: https://github.com/svenstaro/miniserve/compare/v0.27.0...v0.27.1
+[0.27.0]: https://github.com/svenstaro/miniserve/compare/v0.26.0...v0.27.0
+[0.26.0]: https://github.com/svenstaro/miniserve/compare/v0.25.0...v0.26.0
+[0.25.0]: https://github.com/svenstaro/miniserve/compare/v0.24.0...v0.25.0
+[0.24.0]: https://github.com/svenstaro/miniserve/compare/v0.23.2...v0.24.0
+[0.23.2]: https://github.com/svenstaro/miniserve/compare/v0.23.1...v0.23.2
+[0.23.1]: https://github.com/svenstaro/miniserve/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/svenstaro/miniserve/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/svenstaro/miniserve/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/svenstaro/miniserve/compare/v0.20.0...v0.21.0

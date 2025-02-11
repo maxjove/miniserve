@@ -1,22 +1,21 @@
-#[cfg(feature = "tls")]
-use std::{fs::File, io::BufReader};
 use std::{
+    fs::File,
+    io::{BufRead, BufReader},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::PathBuf,
 };
 
-#[cfg(feature = "tls")]
-use anyhow::anyhow;
-use anyhow::{Context, Result};
-use http::HeaderMap;
+use actix_web::http::header::HeaderMap;
+use anyhow::{anyhow, Context, Result};
 
 #[cfg(feature = "tls")]
 use rustls_pemfile as pemfile;
 
 use crate::{
-    args::{CliArgs, MediaType},
+    args::{parse_auth, CliArgs, MediaType},
     auth::RequiredAuth,
-    file_upload::sanitize_path,
+    file_utils::sanitize_path,
+    listing::{SortingMethod, SortingOrder},
     renderer::ThemeSlug,
 };
 
@@ -52,6 +51,12 @@ pub struct MiniserveConfig {
     /// Show hidden files
     pub show_hidden: bool,
 
+    /// Default sorting method
+    pub default_sorting_method: SortingMethod,
+
+    /// Default sorting order
+    pub default_sorting_order: SortingOrder,
+
     /// Route prefix; Either empty or prefixed with slash
     pub route_prefix: String,
 
@@ -80,6 +85,13 @@ pub struct MiniserveConfig {
     /// allow the SPA router to handle the request instead.
     pub spa: bool,
 
+    /// Activate Pretty URLs mode
+    ///
+    /// This will cause the server to serve the equivalent `.html` file indicated by the path.
+    ///
+    /// `/about` will try to find `about.html` and serve it.
+    pub pretty_urls: bool,
+
     /// Enable QR code display
     pub show_qrcode: bool,
 
@@ -107,6 +119,9 @@ pub struct MiniserveConfig {
     /// If false, creation of zip archives is disabled
     pub zip_enabled: bool,
 
+    /// Enable  compress response
+    pub compress_response: bool,
+
     /// If enabled, directories are listed first
     pub dirs_first: bool,
 
@@ -130,6 +145,12 @@ pub struct MiniserveConfig {
 
     /// If enabled, render the readme from the current directory
     pub readme: bool,
+
+    /// If enabled, indexing is disabled.
+    pub disable_indexing: bool,
+
+    /// If enabled, respond to WebDAV requests (read-only).
+    pub webdav_enabled: bool,
 
     /// If set, use provided rustls config for TLS
     #[cfg(feature = "tls")]
@@ -157,6 +178,17 @@ impl MiniserveConfig {
             _ => "".to_owned(),
         };
 
+        let mut auth = args.auth;
+
+        if let Some(path) = args.auth_file {
+            let file = File::open(path)?;
+            let lines = BufReader::new(file).lines();
+
+            for line in lines {
+                auth.push(parse_auth(line?.as_str())?);
+            }
+        }
+
         // Generate some random routes for the favicon and css so that they are very unlikely to conflict with
         // real files.
         // If --random-route is enabled , in order to not leak the random generated route, we must not use it
@@ -164,13 +196,13 @@ impl MiniserveConfig {
         // Otherwise, we should apply route_prefix to static files.
         let (favicon_route, css_route) = if args.random_route {
             (
-                format!("/{}", nanoid::nanoid!(10, &ROUTE_ALPHABET)),
-                format!("/{}", nanoid::nanoid!(10, &ROUTE_ALPHABET)),
+                "/__miniserve_internal/favicon.svg".into(),
+                "/__miniserve_internal/style.css".into(),
             )
         } else {
             (
-                format!("{}/{}", route_prefix, nanoid::nanoid!(10, &ROUTE_ALPHABET)),
-                format!("{}/{}", route_prefix, nanoid::nanoid!(10, &ROUTE_ALPHABET)),
+                format!("{}/{}", route_prefix, "__miniserve_internal/favicon.ico"),
+                format!("{}/{}", route_prefix, "__miniserve_internal/style.css"),
             )
         };
 
@@ -194,22 +226,15 @@ impl MiniserveConfig {
                 let key_file = &mut BufReader::new(
                     File::open(&tls_key).context(format!("Couldn't access TLS key {tls_key:?}"))?,
                 );
-                let cert_chain = pemfile::certs(cert_file).context("Reading cert file")?;
-                let key = pemfile::read_all(key_file)
+                let cert_chain = pemfile::certs(cert_file)
+                    .map(|cert| cert.expect("Invalid certificate in certificate chain"))
+                    .collect();
+                let private_key = pemfile::private_key(key_file)
                     .context("Reading private key file")?
-                    .into_iter()
-                    .find_map(|item| match item {
-                        pemfile::Item::RSAKey(key) | pemfile::Item::PKCS8Key(key) => Some(key),
-                        _ => None,
-                    })
-                    .ok_or_else(|| anyhow!("No supported private key in file"))?;
+                    .expect("No private key found");
                 let server_config = rustls::ServerConfig::builder()
-                    .with_safe_defaults()
                     .with_no_client_auth()
-                    .with_single_cert(
-                        cert_chain.into_iter().map(rustls::Certificate).collect(),
-                        rustls::PrivateKey(key),
-                    )?;
+                    .with_single_cert(cert_chain, private_key)?;
                 Some(server_config)
             } else {
                 None
@@ -232,15 +257,32 @@ impl MiniserveConfig {
             })
         });
 
-        Ok(MiniserveConfig {
+        let allowed_upload_dir = args
+            .allowed_upload_dir
+            .as_ref()
+            .map(|v| {
+                v.iter()
+                    .map(|p| {
+                        sanitize_path(p, args.hidden)
+                            .map(|p| p.display().to_string().replace('\\', "/"))
+                            .ok_or(anyhow!("Illegal path {p:?}"))
+                    })
+                    .collect()
+            })
+            .transpose()?
+            .unwrap_or_default();
+
+        Ok(Self {
             verbose: args.verbose,
             path: args.path.unwrap_or_else(|| PathBuf::from(".")),
             port,
             interfaces,
-            auth: args.auth,
+            auth,
             path_explicitly_chosen,
             no_symlinks: args.no_symlinks,
             show_hidden: args.hidden,
+            default_sorting_method: args.default_sorting_method,
+            default_sorting_order: args.default_sorting_order,
             route_prefix,
             favicon_route,
             css_route,
@@ -248,22 +290,12 @@ impl MiniserveConfig {
             default_color_scheme_dark,
             index: args.index,
             spa: args.spa,
+            pretty_urls: args.pretty_urls,
             overwrite_files: args.overwrite_files,
             show_qrcode: args.qrcode,
             mkdir_enabled: args.mkdir_enabled,
             file_upload: args.allowed_upload_dir.is_some(),
-            allowed_upload_dir: args
-                .allowed_upload_dir
-                .unwrap_or_default()
-                .iter()
-                .map(|x| {
-                    sanitize_path(x, false)
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .replace('\\', "/")
-                })
-                .collect(),
+            allowed_upload_dir,
             uploadable_media_type,
             tar_enabled: args.enable_tar,
             tar_gz_enabled: args.enable_tar_gz,
@@ -276,7 +308,10 @@ impl MiniserveConfig {
             hide_theme_selector: args.hide_theme_selector,
             show_wget_footer: args.show_wget_footer,
             readme: args.readme,
+            disable_indexing: args.disable_indexing,
+            webdav_enabled: args.enable_webdav,
             tls_rustls_config: tls_rustls_server_config,
+            compress_response: args.compress_response,
         })
     }
 }

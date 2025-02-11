@@ -1,6 +1,6 @@
 use std::time::SystemTime;
 
-use actix_web::http::StatusCode;
+use actix_web::http::{StatusCode, Uri};
 use chrono::{DateTime, Local};
 use chrono_humanize::Humanize;
 use clap::{crate_name, crate_version, ValueEnum};
@@ -9,13 +9,12 @@ use fast_qr::{
     qr::QRCodeError,
     QRBuilder,
 };
-use http::Uri;
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 use strum::{Display, IntoEnumIterator};
 
 use crate::auth::CurrentUser;
 use crate::consts;
-use crate::listing::{Breadcrumb, Entry, QueryParameters, SortingMethod, SortingOrder};
+use crate::listing::{Breadcrumb, Entry, ListingQueryParameters, SortingMethod, SortingOrder};
 use crate::{archive::ArchiveMethod, MiniserveConfig};
 
 #[allow(clippy::too_many_arguments)]
@@ -25,7 +24,7 @@ pub fn page(
     readme: Option<(String, String)>,
     abs_uri: &Uri,
     is_root: bool,
-    query_params: QueryParameters,
+    query_params: ListingQueryParameters,
     breadcrumbs: &[Breadcrumb],
     encoded_dir: &str,
     conf: &MiniserveConfig,
@@ -56,36 +55,10 @@ pub fn page(
             (page_header(&title_path, conf.file_upload, &conf.favicon_route, &conf.css_route))
 
             body #drop-container
-                .(format!("default_theme_{}", conf.default_color_scheme))
-                .(format!("default_theme_dark_{}", conf.default_color_scheme_dark)) {
-
-                (PreEscaped(r#"
-                    <script>
-                        // read theme from local storage and apply it to body
-                        const body = document.body;
-                        var theme = localStorage.getItem('theme');
-
-                        if (theme != null && theme != 'default') {
-                            body.classList.add('theme_' + theme);
-                        }
-
-                        // updates the color scheme by replacing the appropriate class
-                        // on body and saving the new theme to local storage
-                        function updateColorScheme(name) {
-                            body.classList.remove.apply(body.classList, Array.from(body.classList).filter(v=>v.startsWith("theme_")));
-
-                            if (name != "default") {
-                                body.classList.add('theme_' + name);
-                            }
-
-                            localStorage.setItem('theme', name);
-                        }
-                    </script>
-                    "#))
-
+            {
                 div.toolbar_box_group {
                     @if conf.file_upload {
-                        div.form {
+                        div.drag-form {
                             div.form_title {
                                 h1 { "Drop your file here to upload it" }
                             }
@@ -144,7 +117,7 @@ pub fn page(
                                     }
                                 }
                             }
-                            @if conf.mkdir_enabled {
+                            @if conf.mkdir_enabled && upload_allowed {
                                 div.toolbar_box {
                                     form id="mkdir" action=(mkdir_action) method="POST" enctype="multipart/form-data" {
                                         p { "Specify a directory name to create" }
@@ -293,8 +266,10 @@ fn wget_footer(abs_path: &Uri, root_dir_name: Option<&str>, current_user: Option
         None => String::new(),
     };
 
-    let command =
-        format!("wget -rcnHp -R 'index.html*'{cut_dirs}{user_params} '{abs_path}?raw=true'");
+    let encoded_abs_path = abs_path.to_string().replace('\'', "%27");
+    let command = format!(
+        "wget -rcnHp -R 'index.html*'{cut_dirs}{user_params} '{encoded_abs_path}?raw=true'"
+    );
     let click_to_copy = format!("navigator.clipboard.writeText(\"{command}\")");
 
     html! {
@@ -348,6 +323,21 @@ pub enum ThemeSlug {
     Monokai,
 }
 
+impl ThemeSlug {
+    pub fn css(&self) -> &str {
+        match self {
+            Self::Squirrel => grass::include!("data/themes/squirrel.scss"),
+            Self::Archlinux => grass::include!("data/themes/archlinux.scss"),
+            Self::Zenburn => grass::include!("data/themes/zenburn.scss"),
+            Self::Monokai => grass::include!("data/themes/monokai.scss"),
+        }
+    }
+
+    pub fn css_dark(&self) -> String {
+        format!("@media (prefers-color-scheme: dark) {{\n{}}}", self.css())
+    }
+}
+
 /// Partial: qr code spoiler
 fn qr_spoiler(show_qrcode: bool, content: &Uri) -> Markup {
     html! {
@@ -377,7 +367,7 @@ fn color_scheme_selector(hide_theme_selector: bool) -> Markup {
                 }
                 ul.theme {
                     @for color_scheme in THEME_PICKER_CHOICES {
-                        li.(format!("theme_{}", color_scheme.1)) {
+                        li data-theme=(color_scheme.1) {
                             (color_scheme_link(color_scheme))
                         }
                     }
@@ -468,7 +458,7 @@ fn build_link(
 ) -> Markup {
     let mut link = format!("?sort={name}&order=asc");
     let mut help = format!("Sort by {name} in ascending order");
-    let mut chevron = chevron_up();
+    let mut chevron = chevron_down();
     let mut class = "";
 
     if let Some(method) = sort_method {
@@ -478,7 +468,7 @@ fn build_link(
                 if order.to_string() == "asc" {
                     link = format!("?sort={name}&order=desc");
                     help = format!("Sort by {name} in descending order");
-                    chevron = chevron_down();
+                    chevron = chevron_up();
                 }
             }
         }
@@ -531,7 +521,12 @@ fn entry_row(
                         @if !raw {
                             @if let Some(size) = entry.size {
                                 span.mobile-info.size {
-                                    (maud::display(size))
+                                    (build_link("size", &format!("{}", size), sort_method, sort_order))
+                                }
+                            }
+                            @if let Some(modification_timer) = humanize_systemtime(entry.last_modification_date) {
+                                span.mobile-info.history {
+                                    (build_link("date", &modification_timer, sort_method, sort_order))
                                 }
                             }
                         }
@@ -586,11 +581,39 @@ fn page_header(title: &str, file_upload: bool, favicon_route: &str, css_route: &
             meta charset="utf-8";
             meta http-equiv="X-UA-Compatible" content="IE=edge";
             meta name="viewport" content="width=device-width, initial-scale=1";
+            meta name="color-scheme" content="dark light";
 
             link rel="icon" type="image/svg+xml" href={ (favicon_route) };
             link rel="stylesheet" href={ (css_route) };
 
             title { (title) }
+
+            (PreEscaped(r#"
+                <script>
+                    // updates the color scheme by setting the theme data attribute
+                    // on body and saving the new theme to local storage
+                    function updateColorScheme(name) {
+                        if (name && name != "default") {
+                            localStorage.setItem('theme', name);
+                            document.body.setAttribute("data-theme", name)
+                        } else {
+                            localStorage.removeItem('theme');
+                            document.body.removeAttribute("data-theme")
+                        }
+                    }
+
+                    // read theme from local storage and apply it to body
+                    function loadColorScheme() {
+                        var name = localStorage.getItem('theme');
+                        updateColorScheme(name);
+                    }
+
+                    // load saved theme on page load
+                    addEventListener("load", loadColorScheme);
+                    // load saved theme when local storage is changed (synchronize between tabs)
+                    addEventListener("storage", loadColorScheme);
+                </script>
+            "#))
 
             @if file_upload {
                 (PreEscaped(r#"
@@ -660,26 +683,15 @@ pub fn render_error(
         html {
             (page_header(&error_code.to_string(), false, &conf.favicon_route, &conf.css_route))
 
-            body.(format!("default_theme_{}", conf.default_color_scheme))
-                .(format!("default_theme_dark_{}", conf.default_color_scheme_dark)) {
-
-                (PreEscaped(r#"
-                    <script>
-                        // read theme from local storage and apply it to body
-                        var theme = localStorage.getItem('theme');
-                        if (theme != null && theme != 'default') {
-                            document.body.classList.add('theme_' + theme);
-                        }
-                    </script>
-                    "#))
-
+            body
+            {
                 div.error {
                     p { (error_code.to_string()) }
                     @for error in error_description.lines() {
                         p { (error) }
                     }
                     // WARN don't expose random route!
-                    @if conf.route_prefix.is_empty() {
+                    @if conf.route_prefix.is_empty() && !conf.disable_indexing {
                         div.error-nav {
                             a.error-back href=(return_address) {
                                 "Go back to file listing"

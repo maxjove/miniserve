@@ -1,10 +1,13 @@
 #![allow(clippy::format_push_string)]
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 use std::time::SystemTime;
 
-use actix_web::{dev::ServiceResponse, web::Query, HttpMessage, HttpRequest, HttpResponse};
+use actix_web::{
+    dev::ServiceResponse, http::Uri, web::Query, HttpMessage, HttpRequest, HttpResponse,
+};
 use bytesize::ByteSize;
+use clap::ValueEnum;
 use comrak::{markdown_to_html, ComrakOptions};
 use percent_encoding::{percent_decode_str, utf8_percent_encode};
 use regex::Regex;
@@ -13,37 +16,46 @@ use strum::{Display, EnumString};
 
 use crate::archive::ArchiveMethod;
 use crate::auth::CurrentUser;
-use crate::errors::{self, ContextualError};
+use crate::errors::{self, RuntimeError};
 use crate::renderer;
 
-use self::percent_encode_sets::PATH_SEGMENT;
+use self::percent_encode_sets::COMPONENT;
 
 /// "percent-encode sets" as defined by WHATWG specs:
 /// https://url.spec.whatwg.org/#percent-encoded-bytes
 mod percent_encode_sets {
     use percent_encoding::{AsciiSet, CONTROLS};
-    const BASE: &AsciiSet = &CONTROLS.add(b'%');
-    pub const QUERY: &AsciiSet = &BASE.add(b' ').add(b'"').add(b'#').add(b'<').add(b'>');
+    pub const QUERY: &AsciiSet = &CONTROLS.add(b' ').add(b'"').add(b'#').add(b'<').add(b'>');
     pub const PATH: &AsciiSet = &QUERY.add(b'?').add(b'`').add(b'{').add(b'}');
-    pub const PATH_SEGMENT: &AsciiSet = &PATH.add(b'/').add(b'\\');
+    pub const USERINFO: &AsciiSet = &PATH
+        .add(b'/')
+        .add(b':')
+        .add(b';')
+        .add(b'=')
+        .add(b'@')
+        .add(b'[')
+        .add(b'\\')
+        .add(b']')
+        .add(b'^')
+        .add(b'|');
+    pub const COMPONENT: &AsciiSet = &USERINFO.add(b'$').add(b'%').add(b'&').add(b'+').add(b',');
 }
 
-/// Query parameters
+/// Query parameters used by listing APIs
 #[derive(Deserialize, Default)]
-pub struct QueryParameters {
-    pub path: Option<PathBuf>,
+pub struct ListingQueryParameters {
     pub sort: Option<SortingMethod>,
     pub order: Option<SortingOrder>,
     pub raw: Option<bool>,
-    pub mkdir_name: Option<String>,
     download: Option<ArchiveMethod>,
 }
 
 /// Available sorting methods
-#[derive(Deserialize, Clone, EnumString, Display, Copy)]
+#[derive(Deserialize, Default, Clone, EnumString, Display, Copy, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum SortingMethod {
+    #[default]
     /// Sort by name
     Name,
 
@@ -55,17 +67,18 @@ pub enum SortingMethod {
 }
 
 /// Available sorting orders
-#[derive(Deserialize, Clone, EnumString, Display, Copy)]
+#[derive(Deserialize, Default, Clone, EnumString, Display, Copy, ValueEnum)]
 pub enum SortingOrder {
     /// Ascending order
     #[serde(alias = "asc")]
     #[strum(serialize = "asc")]
-    Ascending,
+    Asc,
 
     /// Descending order
+    #[default]
     #[serde(alias = "desc")]
     #[strum(serialize = "desc")]
-    Descending,
+    Desc,
 }
 
 #[derive(PartialEq, Eq)]
@@ -108,7 +121,7 @@ impl Entry {
         last_modification_date: Option<SystemTime>,
         symlink_info: Option<String>,
     ) -> Self {
-        Entry {
+        Self {
             name,
             entry_type,
             link,
@@ -140,7 +153,7 @@ pub struct Breadcrumb {
 
 impl Breadcrumb {
     fn new(name: String, link: String) -> Self {
-        Breadcrumb { name, link }
+        Self { name, link }
     }
 }
 
@@ -159,16 +172,29 @@ pub fn directory_listing(
     let current_user: Option<&CurrentUser> = extensions.get::<CurrentUser>();
 
     let conf = req.app_data::<crate::MiniserveConfig>().unwrap();
+    if conf.disable_indexing {
+        return Ok(ServiceResponse::new(
+            req.clone(),
+            HttpResponse::NotFound()
+                .content_type(mime::TEXT_PLAIN_UTF_8)
+                .body("File not found."),
+        ));
+    }
     let serve_path = req.path();
 
     let base = Path::new(serve_path);
     let random_route_abs = format!("/{}", conf.route_prefix);
-    let abs_uri = http::Uri::builder()
-        .scheme(req.connection_info().scheme())
-        .authority(req.connection_info().host())
-        .path_and_query(req.uri().to_string())
-        .build()
-        .unwrap();
+    let abs_uri = {
+        let res = Uri::builder()
+            .scheme(req.connection_info().scheme())
+            .authority(req.connection_info().host())
+            .path_and_query(req.uri().to_string())
+            .build();
+        match res {
+            Ok(uri) => uri,
+            Err(err) => return Ok(ServiceResponse::from_err(err, req.clone())),
+        }
+    };
     let is_root = base.parent().is_none() || Path::new(&req.path()) == Path::new(&random_route_abs);
 
     let encoded_dir = match base.strip_prefix(random_route_abs) {
@@ -187,9 +213,7 @@ pub fn directory_listing(
         let decoded = percent_decode_str(&encoded_dir).decode_utf8_lossy();
 
         let mut res: Vec<Breadcrumb> = Vec::new();
-
         let mut link_accumulator = format!("{}/", &conf.route_prefix);
-
         let mut components = Path::new(&*decoded).components().peekable();
 
         while let Some(c) = components.next() {
@@ -202,7 +226,7 @@ pub fn directory_listing(
                 Component::Normal(s) => {
                     name = s.to_string_lossy().to_string();
                     link_accumulator
-                        .push_str(&(utf8_percent_encode(&name, PATH_SEGMENT).to_string() + "/"));
+                        .push_str(&(utf8_percent_encode(&name, COMPONENT).to_string() + "/"));
                 }
                 _ => name = "".to_string(),
             };
@@ -220,7 +244,6 @@ pub fn directory_listing(
     };
 
     let query_params = extract_query_parameters(req);
-
     let mut entries: Vec<Entry> = Vec::new();
     let mut readme: Option<(String, String)> = None;
     let readme_rx: Regex = Regex::new("^readme([.](md|txt))?$").unwrap();
@@ -242,7 +265,7 @@ pub fn directory_listing(
                 .and_then(|path| std::fs::read_link(path).ok())
                 .map(|path| path.to_string_lossy().into_owned());
             let file_url = base
-                .join(utf8_percent_encode(&file_name, PATH_SEGMENT).to_string())
+                .join(utf8_percent_encode(&file_name, COMPONENT).to_string())
                 .to_string_lossy()
                 .to_string();
 
@@ -251,10 +274,7 @@ pub fn directory_listing(
                 if conf.no_symlinks && is_symlink {
                     continue;
                 }
-                let last_modification_date = match metadata.modified() {
-                    Ok(date) => Some(date),
-                    Err(_) => None,
-                };
+                let last_modification_date = metadata.modified().ok();
 
                 if metadata.is_dir() {
                     entries.push(Entry::new(
@@ -275,7 +295,7 @@ pub fn directory_listing(
                         symlink_dest,
                     ));
                     if conf.readme && readme_rx.is_match(&file_name.to_lowercase()) {
-                        let ext = file_name.split('.').last().unwrap().to_lowercase();
+                        let ext = file_name.split('.').next_back().unwrap().to_lowercase();
                         readme = Some((
                             file_name.to_string(),
                             if ext == "md" {
@@ -295,7 +315,7 @@ pub fn directory_listing(
         }
     }
 
-    match query_params.sort.unwrap_or(SortingMethod::Name) {
+    match query_params.sort.unwrap_or(conf.default_sorting_method) {
         SortingMethod::Name => entries.sort_by(|e1, e2| {
             alphanumeric_sort::compare_str(e1.name.to_lowercase(), e2.name.to_lowercase())
         }),
@@ -315,7 +335,7 @@ pub fn directory_listing(
         }),
     };
 
-    if let Some(SortingOrder::Descending) = query_params.order {
+    if let SortingOrder::Asc = query_params.order.unwrap_or(conf.default_sorting_order) {
         entries.reverse()
     }
 
@@ -364,7 +384,6 @@ pub fn directory_listing(
             req.clone(),
             HttpResponse::Ok()
                 .content_type(archive_method.content_type())
-                .append_header(archive_method.content_encoding())
                 .append_header(("Content-Transfer-Encoding", "binary"))
                 .append_header((
                     "Content-Disposition",
@@ -393,13 +412,13 @@ pub fn directory_listing(
     }
 }
 
-pub fn extract_query_parameters(req: &HttpRequest) -> QueryParameters {
-    match Query::<QueryParameters>::from_query(req.query_string()) {
+pub fn extract_query_parameters(req: &HttpRequest) -> ListingQueryParameters {
+    match Query::<ListingQueryParameters>::from_query(req.query_string()) {
         Ok(Query(query_params)) => query_params,
         Err(e) => {
-            let err = ContextualError::ParseError("query parameters".to_string(), e.to_string());
+            let err = RuntimeError::ParseError("query parameters".to_string(), e.to_string());
             errors::log_error_chain(err.to_string());
-            QueryParameters::default()
+            ListingQueryParameters::default()
         }
     }
 }
